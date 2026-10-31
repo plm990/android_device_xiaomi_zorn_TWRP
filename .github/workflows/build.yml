@@ -35,20 +35,47 @@ on:
         description: "Build partition"
         required: true
         default: "recovery"
+      BUILD_JOBS:
+        description: "Ninja jobs (lower = less RAM)"
+        required: true
+        default: "4"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      checks: write
     steps:
     - name: Show build info
       run: |
         echo "LUNCH_TARGET=${{ github.event.inputs.LUNCH_TARGET }}" >> "$GITHUB_ENV"
+        echo "BUILD_JOBS=${{ github.event.inputs.BUILD_JOBS }}" >> "$GITHUB_ENV"
         echo "BUILD_DATE=`date +%F`" >> "$GITHUB_ENV"
+
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@main
 
     - name: Maximize build space
       uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 8192
+        swap-size-mb: 16384
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-docker-images: 'true'
+
+    - name: Setup zram
+      run: |
+        sudo apt install linux-modules-extra-$(uname -r) zram-tools -y
+        sudo modprobe zram
+        sudo sed -i 's/^#PERCENT=50/PERCENT=90/' /etc/default/zramswap
+        sudo sed -i 's/^#PRIORITY=100/ PRIORITY=1000/' /etc/default/zramswap
+        sudo systemctl restart zramswap
+        zramctl
+        free -h
 
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1.2
@@ -72,11 +99,18 @@ jobs:
 
     - name: Build TWRP
       run: |
+        free -h
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         export USE_CCACHE=1
+        export CCACHE_DIR=.ccache
+        export CCACHE_EXEC=$(command -v ccache)
+        export CCACHE_MAXSIZE=8G
         lunch twrp_${{ env.LUNCH_TARGET }}
-        m ${{ github.event.inputs.BUILD_PARTITION }}image
+        (while true; do echo `date +%T` "Building TWRP..."; free -h; sleep 60; done) &
+        TIP_PID=$!
+        m -j${{ env.BUILD_JOBS }} ${{ github.event.inputs.BUILD_PARTITION }}image
+        kill $TIP_PID && exit 0
         mv out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_PARTITION }}.img \
            out/target/product/${{ github.event.inputs.DEVICE_NAME }}/TWRP-16-zorn-${{ env.BUILD_DATE }}.img
 
